@@ -1,0 +1,264 @@
+import 'dart:ui';
+import 'package:flutter/material.dart';
+import 'dart:io';
+import 'package:raft_charging/booking.dart';
+import 'package:flutter/foundation.dart';
+import 'package:qr_code_scanner/qr_code_scanner.dart';
+import 'package:fluttertoast/fluttertoast.dart';
+import 'package:flutter_blue/flutter_blue.dart';
+import 'package:flutter_scan_bluetooth/flutter_scan_bluetooth.dart';
+import 'dart:async';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:bluetooth_enable/bluetooth_enable.dart';
+
+class BluetoothDevices extends StatefulWidget {
+  final int arguments;
+  const BluetoothDevices({Key key, @required this.arguments}) : super(key: key);
+
+  @override
+  _BluetoothState createState() => _BluetoothState();
+}
+
+class _BluetoothState extends State<BluetoothDevices> {
+  String connectingData = "";
+  final dur = const Duration(seconds: 1);
+
+  Barcode result;
+  QRViewController controller;
+  String scanCode = "";
+  final GlobalKey qrKey = GlobalKey(debugLabel: 'QR');
+
+  FlutterBlue flutterBlue = FlutterBlue.instance;
+  StreamSubscription<List<ScanResult>> subScription; // * StreamSubscription
+
+  BluetoothDevice device;
+
+  @override
+  void initState() {
+    super.initState();
+    FlutterBlue flutterBlue = FlutterBlue.instance;
+      _askPermission();
+    }
+
+  _askPermission() async {
+    Map<Permission, PermissionStatus> statuses =
+    await [Permission.locationAlways].request();
+
+    bool granted = statuses.values
+        .every((permission) => permission == PermissionStatus.granted);
+
+    if (granted) {
+      enableBT();
+    }
+  }
+
+  enableBT() async {
+    BluetoothEnable.enableBluetooth.then((value) {
+      print(value);
+    });
+  }
+
+  startScan(){
+    connectingData = "Start Scanning";
+    Fluttertoast.showToast(msg:connectingData, timeInSecForIosWeb: 1);
+    flutterBlue.startScan(timeout: Duration(seconds: 60)); // Start scanning
+    connectDevice();
+  }
+
+  connectDevice(){
+    subScription = flutterBlue.scanResults.listen((scanResult) async { // Listen to scan results
+      print("Found devices: ${scanResult.length}");
+
+      for (ScanResult result in scanResult) {
+        print('${result.device.name} found! rssi: ${result.rssi}');
+
+        if (result.device.name == scanCode) {
+          setState(() {
+            connectingData = '${result.device.name} Device Found';
+          });
+          stopScan();
+          Fluttertoast.showToast(msg: connectingData, timeInSecForIosWeb: 1);
+
+          device= result.device;
+          connectToDevice();
+        }
+      }
+    }, onDone: ()=> stopScan());
+  }
+
+  stopScan() {
+    flutterBlue.stopScan();
+    subScription.cancel();
+    subScription = null;
+  }
+
+  connectToDevice() async {
+    if (device == null) return;
+
+    setState(() {
+      connectingData = 'connecting';
+    });
+    Fluttertoast.showToast(msg: connectingData, timeInSecForIosWeb: 1);
+
+    await device.connect();
+
+    setState(() {
+      connectingData = 'connected';
+    });
+    Fluttertoast.showToast(msg: connectingData, timeInSecForIosWeb: 1);
+
+    discoverServices();
+  }
+
+
+
+  discoverServices() async {
+    List<BluetoothService> services = await device.discoverServices();
+    services.forEach((service) {
+          // do something with service
+      var characteristics = service.characteristics;
+      for (BluetoothCharacteristic c in characteristics) {
+
+        c.write([0x12, 0x34]);   // Writes to a characteristic
+      }
+    });
+    await device.write([0x12, 0x34]);   // Writes to a characteristic
+  }
+
+
+  /*Scanner Ui*/
+
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    if (Platform.isAndroid) {
+      controller.pauseCamera();
+    }
+    controller.resumeCamera();
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+  //  var check= _tryAgain ? _checkBluetooth() : Text(" ");
+    return Scaffold(
+      body: Stack(
+        children: <Widget> [
+          Column(
+            children: [
+              Expanded(flex: 4, child: _buildQrView(context)),
+              Expanded(
+                flex: 1,
+                child: FittedBox(
+                  fit: BoxFit.contain,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: <Widget>[
+                      if (result != null)
+                        Text(
+                            'Barcode Type: ${describeEnum(
+                                result.format)}   Data: ${result.code} ')
+                      else
+                        Text('Scan a code ${widget.arguments}' ),
+                      Padding(
+                        padding: EdgeInsets.only(top: 10.0, bottom: 10.0),
+                        child: Image(image: AssetImage(
+                            'assets/torch.png'),
+                          width: 40,
+                          height: 40,
+                        ),
+                      ),
+                      Padding(
+                        padding: EdgeInsets.only(top: 10.0),
+                        child: Image(image: AssetImage(
+                            'assets/qrcode.png'),
+                          width: 60,
+                          height: 60,
+                        ),
+                      ),
+                      Padding(
+                        padding: EdgeInsets.only(top: 10.0),
+                        child: Text('Scan QR code on charger poster to book.',
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: EdgeInsets.only(bottom: 10.0),
+                        child: Text('Tip: Keep phone 1-2 feet away from QR code.',
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQrView(BuildContext context) {
+    // For this example we check how width or tall the device is and change the scanArea and overlay accordingly.
+    var scanArea = (MediaQuery
+        .of(context)
+        .size
+        .width < 600 ||
+        MediaQuery
+            .of(context)
+            .size
+            .height < 600)
+        ? 150.0
+        : 200.0;
+    // To ensure the Scanner view is properly sizes after rotation
+    // we need to listen for Flutter SizeChanged notification and update controller
+    return QRView(
+      key: qrKey,
+      onQRViewCreated: _onQRViewCreated,
+      overlay: QrScannerOverlayShape(
+          borderColor: Colors.red,
+          borderRadius: 10,
+          borderLength: 30,
+          borderWidth: 10,
+          cutOutSize: scanArea),
+    );
+  }
+
+  void _onQRViewCreated(QRViewController controller) {
+    setState(() {
+      this.controller = controller;
+    });
+    controller.scannedDataStream.listen((scanData) {
+      setState(() {
+        result = scanData;
+        scanCode = result.code;//qrcode
+        Fluttertoast.showToast(
+            msg: scanCode,
+            toastLength: Toast.LENGTH_SHORT,
+            gravity: ToastGravity.CENTER,
+            timeInSecForIosWeb: 1,
+            backgroundColor: Colors.red,
+            textColor: Colors.white,
+            fontSize: 16.0
+        );
+      });
+      startScan();
+      dispose();
+    });
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    if (result != null)
+      Navigator.push(
+          context, MaterialPageRoute(builder: (context) => Booking(arguments: widget.arguments, connectingData: connectingData)));
+    super.dispose();
+  }
+}
